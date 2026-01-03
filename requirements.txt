@@ -4,3 +4,5 @@ pandas
 tqdm
 folium 
 geopy
+streamlit 
+streamlit-folium

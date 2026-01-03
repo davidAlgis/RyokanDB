@@ -1,6 +1,7 @@
 import random
 import re
 import time
+import unicodedata
 
 import pandas as pd
 import requests
@@ -25,15 +26,30 @@ locator = RyokanLocator()
 
 def clean_text(text):
     """
-    Aggressively cleans text to ensure it fits on one line in CSV.
+    Normalizes text to ASCII, removing accents and special characters
+    like non-breaking spaces (<0xa0>).
     """
-    if text:
-        # Replace newlines/tabs with space
-        cleaned = text.replace("\n", " ").replace("\r", "").replace("\t", " ")
-        # Remove multiple spaces
-        cleaned = re.sub(" +", " ", cleaned)
-        return cleaned.strip()
-    return ""
+    if not text:
+        return ""
+
+    # 1. Explicitly replace non-breaking spaces with standard spaces
+    #    (Prevents words from sticking together when non-ascii chars are stripped)
+    text = text.replace("\xa0", " ")
+
+    # 2. Normalize Unicode characters
+    #    'NFKD' decomposes characters (e.g., 'é' becomes 'e' + '´')
+    text = unicodedata.normalize("NFKD", text)
+
+    # 3. Encode to ASCII, ignoring errors (strips the '´' and other non-ascii chars)
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # 4. Standard whitespace cleanup
+    text = text.replace("\n", " ").replace("\r", "").replace("\t", " ")
+
+    # 5. Remove multiple spaces and strip
+    cleaned = re.sub(" +", " ", text)
+
+    return cleaned.strip()
 
 
 def get_ryokan_details(url):
@@ -48,7 +64,7 @@ def get_ryokan_details(url):
         h1 = soup.find("h1")
         name = clean_text(h1.text) if h1 else "Unknown"
 
-        # 2. Location (Address)
+        # 2. Location
         addr_tag = soup.select_one(".txt-address")
         location = "Unknown"
         if addr_tag:
@@ -115,14 +131,42 @@ def get_ryokan_details(url):
                     elif "indoor and outdoor" in dt:
                         rental_both = count > 0
 
-        # 6. TripAdvisor Rating
+        # 6. TripAdvisor Rating (UPDATED)
         rating = 0.0
-        ta_img = soup.find("img", alt=re.compile(r"of 5 bubbles"))
-        if ta_img:
-            alt_text = ta_img["alt"]
-            match = re.search(r"([\d\.]+)", alt_text)
-            if match:
-                rating = float(match.group(1))
+        # 1. Find the iframe that holds the widget
+        ta_iframe = soup.find(
+            "iframe", src=re.compile(r"tripadvisor\.com/WidgetEmbed")
+        )
+
+        if ta_iframe:
+            widget_src = ta_iframe.get("src")
+            # Handle protocol-relative URLs (e.g., //www.tripadvisor...)
+            if widget_src.startswith("//"):
+                widget_src = "https:" + widget_src
+
+            try:
+                # 2. Fetch the content of the widget iframe
+                # We use a short timeout so we don't hang if TA is slow
+                widget_response = requests.get(
+                    widget_src, headers=HEADERS, timeout=3
+                )
+                if widget_response.status_code == 200:
+                    widget_soup = BeautifulSoup(
+                        widget_response.content, "html.parser"
+                    )
+
+                    # 3. Find the image INSIDE the widget HTML
+                    ta_img = widget_soup.find(
+                        "img", alt=re.compile(r"of 5 bubbles")
+                    )
+                    if ta_img:
+                        alt_text = ta_img["alt"]
+                        match = re.search(r"([\d\.]+)", alt_text)
+                        if match:
+                            rating = float(match.group(1))
+            except Exception:
+                # If scraping the widget fails, we silently default to 0.0
+                pass
 
         # 7. Tags
         tags = []
@@ -145,7 +189,6 @@ def get_ryokan_details(url):
             parent_article = trans_tag.find_parent("article")
             if parent_article:
                 ps = parent_article.find_all("p")
-                # Grab text starting with (1), (2) etc and clean it immediately
                 trans_lines = [
                     clean_text(p.text)
                     for p in ps
@@ -153,8 +196,7 @@ def get_ryokan_details(url):
                 ]
                 transport = " | ".join(trans_lines)
 
-        # --- NEW: Fetch GPS Immediately ---
-        # This calls our new robust logic (OSM + ArcGIS)
+        # --- GPS Fetch ---
         lat, lon = locator.get_coordinates(name, location)
 
         return {
@@ -167,7 +209,7 @@ def get_ryokan_details(url):
             "rental_indoor_tubs": rental_indoor,
             "rental_both_indoor_outdoor_tubs": rental_both,
             "tripadvisor_rating": rating,
-            "tags": str(tags),  # Convert list to string to keep on one line
+            "tags": str(tags),
             "description": description,
             "transportation": transport,
             "lat": lat,

@@ -1,8 +1,19 @@
 {
-	"folders":
-	[
+	"folders": [
 		{
 			"path": "."
 		},
 	],
+	"build_systems": [
+		{
+			"name": "1. Generate CSV (Scraper)",
+			"shell_cmd": "python generate_db_ryokans.py",
+			"working_dir": "${project_path:${folder}}"
+		},
+		{
+			"name": "2. Start App (Streamlit)",
+			"shell_cmd": "streamlit run ryokan_map.py",
+			"working_dir": "${project_path:${folder}}"
+		}
+	]
 }

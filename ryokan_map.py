@@ -1,5 +1,6 @@
 import folium
 import pandas as pd
+import requests
 import streamlit as st
 from folium.plugins import Fullscreen, MarkerCluster
 from streamlit_folium import st_folium
@@ -8,16 +9,55 @@ from streamlit_folium import st_folium
 INPUT_FILE = "ryokans_db.csv"
 JAPAN_COORDS = [36.2048, 138.2529]
 
+# Fallback rates in case API fails
+FALLBACK_RATES = {
+    "JPY": 1.0,
+    "USD": 0.0067,  # approx 1 USD = 150 JPY
+    "EUR": 0.0062,  # approx 1 EUR = 160 JPY
+}
 
-def load_data():
+SYMBOLS = {"JPY": "¥", "USD": "$", "EUR": "€"}
+
+
+@st.cache_data(ttl=3600)  # Cache data for 1 hour to avoid spamming the API
+def fetch_exchange_rates():
+    """
+    Fetches real-time exchange rates with JPY as the base.
+    Returns a dictionary like {'JPY': 1.0, 'USD': 0.0067, ...}
+    """
     try:
-        # Load data (handling the semicolon separator)
+        # We use the open.er-api.com endpoint which requires no API key.
+        # We ask for rates relative to JPY.
+        url = "https://open.er-api.com/v6/latest/JPY"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+
+        # specific rates we care about
+        rates = {
+            "JPY": 1.0,
+            "USD": data["rates"]["USD"],
+            "EUR": data["rates"]["EUR"],
+        }
+        return rates
+    except Exception as e:
+        # Silently fail to console and return hardcoded fallback
+        print(f"⚠️ API Error (using fallback rates): {e}")
+        return FALLBACK_RATES
+
+
+@st.cache_data
+def load_data():
+    """
+    Loads ryokan data from CSV.
+    """
+    try:
         df = pd.read_csv(INPUT_FILE, sep=";")
 
-        # Ensure coordinates are numeric and drop missing ones
+        # Ensure coordinates are present
         df = df.dropna(subset=["lat", "lon"])
 
-        # Clean up price (ensure it's int)
+        # Clean up price columns
         df["price_range_min"] = (
             pd.to_numeric(df["price_range_min"], errors="coerce")
             .fillna(0)
@@ -40,9 +80,12 @@ def main():
     )
 
     st.title("♨️ Japan Ryokan Explorer")
-    st.markdown("Filter and discover the perfect Onsen Ryokan for your trip.")
 
+    # 1. Load Data
     df = load_data()
+
+    # 2. Fetch Rates (Live or Fallback)
+    rates = fetch_exchange_rates()
 
     if df is None:
         st.error(
@@ -59,20 +102,43 @@ def main():
     # --- Sidebar Filters ---
     st.sidebar.header("Filter Options")
 
-    # 1. Price Filter (Double-ended slider)
-    # Find sensible defaults from data
-    min_data_price = int(df["price_range_min"].min())
-    max_data_price = int(df["price_range_max"].max())
+    # Currency Selector
+    currency = st.sidebar.selectbox("Currency", ["JPY", "USD", "EUR"])
+    current_rate = rates[currency]
+    symbol = SYMBOLS[currency]
 
-    price_range = st.sidebar.slider(
-        "💰 Price Range (Yen/Night)",
-        min_value=0,
-        max_value=150000,  # Cap at 150k for slider usability
-        value=(10000, 50000),
-        step=1000,
+    # Display current rate for user info
+    if currency != "JPY":
+        st.sidebar.caption(
+            f"ℹ️ Live Rate: 10,000 JPY ≈ {10000 * current_rate:.2f} {currency}"
+        )
+
+    # Dynamic Price Sliders
+    # Calculate min/max in the SELECTED currency
+    min_actual_price_converted = int(
+        df["price_range_min"].min() * current_rate
+    )
+    max_actual_price_converted = int(
+        df["price_range_max"].max() * current_rate
     )
 
-    # 2. Rating Filter (Single slider)
+    # Add buffer for the slider max
+    slider_max = max_actual_price_converted + (
+        5000 * current_rate if currency == "JPY" else 100
+    )
+
+    price_range = st.sidebar.slider(
+        f"💰 Price Range ({currency}/Night)",
+        min_value=min_actual_price_converted,
+        max_value=int(slider_max),
+        value=(
+            min_actual_price_converted,
+            int(max_actual_price_converted * 0.5),
+        ),
+        step=1000 if currency == "JPY" else 10,
+    )
+
+    # Rating Filter
     min_rating = st.sidebar.slider(
         "⭐ Min TripAdvisor Rating",
         min_value=0.0,
@@ -84,45 +150,37 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.subheader("Amenities")
 
-    # 3. Toggles for Baths
-    # "True" means we filter to keep ONLY those that have it.
-    # "False" means we don't care (show all).
-    show_open_air_room = st.sidebar.toggle(
-        "Rooms with Open-Air Bath", value=False
-    )
-    show_rental_open = st.sidebar.toggle(
-        "Private Rental Open-Air Bath", value=False
-    )
-    show_rental_indoor = st.sidebar.toggle(
-        "Private Rental Indoor Bath", value=False
-    )
-    show_rental_both = st.sidebar.toggle(
-        "Private Rental (Both Types)", value=False
-    )
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        show_open_air_room = st.toggle("Room w/ Open-Air Bath", value=False)
+        show_rental_open = st.toggle("Private Rental Outdoor", value=False)
+    with col2:
+        show_rental_indoor = st.toggle("Private Rental Indoor", value=False)
+        show_rental_both = st.toggle("Private Rental Both", value=False)
 
     # --- Filtering Logic ---
     filtered_df = df.copy()
 
-    # Filter Price: Keep if the ryokan's min price is within the user's selected range
-    # (Logic: Is the ryokan affordable within the selected budget?)
+    # Convert user selection back to JPY for filtering the raw dataframe
+    min_filter_jpy = price_range[0] / current_rate
+    max_filter_jpy = price_range[1] / current_rate
+
+    # Filter Price
     filtered_df = filtered_df[
-        (filtered_df["price_range_min"] >= price_range[0])
-        & (filtered_df["price_range_min"] <= price_range[1])
+        (filtered_df["price_range_min"] >= min_filter_jpy)
+        & (filtered_df["price_range_min"] <= max_filter_jpy)
     ]
 
     # Filter Rating
     filtered_df = filtered_df[filtered_df["tripadvisor_rating"] >= min_rating]
 
-    # Filter Amenities (If toggle is ON, column must be > 0 or True)
+    # Filter Amenities
     if show_open_air_room:
         filtered_df = filtered_df[filtered_df["room_with_open_air_bath"] > 0]
-
     if show_rental_open:
         filtered_df = filtered_df[filtered_df["rental_open_air_tubs"] == True]
-
     if show_rental_indoor:
         filtered_df = filtered_df[filtered_df["rental_indoor_tubs"] == True]
-
     if show_rental_both:
         filtered_df = filtered_df[
             filtered_df["rental_both_indoor_outdoor_tubs"] == True
@@ -140,52 +198,61 @@ def main():
     marker_cluster = MarkerCluster().add_to(m)
 
     for _, row in filtered_df.iterrows():
-        # Dynamic Icon Color based on Price
+        # Display price in selected currency
+        display_price = int(row["price_range_min"] * current_rate)
+
+        # Color logic (using fixed JPY thresholds for consistency)
+        price_jpy = row["price_range_min"]
         color = "green"
-        if row["price_range_min"] > 100000:
+        if price_jpy > 100000:
             color = "black"
-        elif row["price_range_min"] > 60000:
+        elif price_jpy > 60000:
             color = "purple"
-        elif row["price_range_min"] > 30000:
+        elif price_jpy > 30000:
             color = "orange"
 
-        # Create Popup
-        # Note: We use basic HTML here because Folium/Streamlit integration handles it well
         popup_html = f"""
-        <b>{row['name']}</b><br>
-        Price: ¥{row['price_range_min']:,}<br>
-        Rating: {row['tripadvisor_rating']}⭐<br>
-        <a href="{row['url']}" target="_blank">View Details</a>
+        <div style="font-family:sans-serif; min-width:180px">
+            <b>{row['name']}</b><br>
+            Price: {symbol}{display_price:,}<br>
+            Rating: {row['tripadvisor_rating']}⭐<br>
+            <a href="{row['url']}" target="_blank">View Details</a>
+        </div>
         """
 
         folium.Marker(
             location=[row["lat"], row["lon"]],
-            popup=folium.Popup(popup_html, max_width=200),
-            tooltip=f"{row['name']} (¥{row['price_range_min']:,})",
+            popup=folium.Popup(popup_html, max_width=250),
+            tooltip=f"{row['name']} ({symbol}{display_price:,})",
             icon=folium.Icon(color=color, icon="hot-tub-person", prefix="fa"),
         ).add_to(marker_cluster)
 
     # Display Map
-    st_folium(m, width=1200, height=600)
+    st_folium(m, width=1200, height=600, use_container_width=True)
 
     # --- Data Table View ---
     with st.expander("See details in list view"):
-        # Show specific relevant columns
+        display_df = filtered_df.copy()
+        display_df["display_price"] = (
+            display_df["price_range_min"] * current_rate
+        ).astype(int)
+
         cols = [
             "name",
             "location",
-            "price_range_min",
+            "display_price",
             "tripadvisor_rating",
             "url",
         ]
+
         st.dataframe(
-            filtered_df[cols].sort_values(
+            display_df[cols].sort_values(
                 by="tripadvisor_rating", ascending=False
             ),
             column_config={
                 "url": st.column_config.LinkColumn("Link"),
-                "price_range_min": st.column_config.NumberColumn(
-                    "Price (¥)", format="¥%d"
+                "display_price": st.column_config.NumberColumn(
+                    f"Price ({symbol})", format=f"{symbol}%d"
                 ),
             },
             use_container_width=True,

@@ -20,6 +20,8 @@ FALLBACK_RATES = {
 
 SYMBOLS = {"JPY": "¥", "USD": "$", "EUR": "€"}
 
+# --- Helper Functions ---
+
 
 @st.cache_data(ttl=3600)
 def fetch_exchange_rates():
@@ -45,6 +47,9 @@ def fetch_exchange_rates():
 
 @st.cache_data
 def load_data():
+    """
+    Loads the CSV data and cleans the price columns.
+    """
     try:
         df = pd.read_csv(INPUT_FILE, sep=";")
         df = df.dropna(subset=["lat", "lon"])
@@ -63,11 +68,95 @@ def load_data():
         return None
 
 
+# --- Map Rendering Fragment (Anti-Blink Fix) ---
+@st.fragment
+def render_map(filtered_df, symbol, current_rate):
+    st.markdown(
+        f"**Found {len(filtered_df)} Ryokans matching your criteria.**"
+    )
+
+    # Create the map object
+    m = folium.Map(
+        location=JAPAN_COORDS, zoom_start=5, tiles="CartoDB positron"
+    )
+    Fullscreen().add_to(m)
+    marker_cluster = MarkerCluster().add_to(m)
+
+    for _, row in filtered_df.iterrows():
+        # Calculate display prices
+        disp_min = int(row["price_range_min"] * current_rate)
+        disp_max = int(row["price_range_max"] * current_rate)
+
+        # Color Logic
+        price_jpy = row["price_range_min"]
+        color = "green"
+        if price_jpy > 100000:
+            color = "black"
+        elif price_jpy > 60000:
+            color = "purple"
+        elif price_jpy > 30000:
+            color = "orange"
+
+        # Popup Logic
+        has_room_bath = (
+            "Available"
+            if row["room_with_open_air_bath"] > 0
+            else "Unavailable"
+        )
+        color_room_bath = (
+            "green" if row["room_with_open_air_bath"] > 0 else "gray"
+        )
+
+        has_rental = (
+            row["rental_open_air_tubs"]
+            or row["rental_indoor_tubs"]
+            or row["rental_both_indoor_outdoor_tubs"]
+        )
+        rental_status = "Available" if has_rental else "Unavailable"
+        color_rental = "green" if has_rental else "gray"
+
+        encoded_name = urllib.parse.quote(row["name"] + " Ryokan")
+        booking_link = (
+            f"https://www.booking.com/searchresults.html?ss={encoded_name}"
+        )
+        price_str = f"{symbol}{disp_min:,} - {symbol}{disp_max:,}"
+
+        popup_html = f"""
+        <div style="font-family:sans-serif; min-width:250px">
+            <h4 style="margin:0">{row['name']}</h4>
+            <p style="margin:0; font-size:12px; color:#555">{row['location']}</p>
+            <hr style="margin:5px 0">
+            <b>Price:</b> {price_str}<br>
+            <b>Rating:</b> {row['tripadvisor_rating']}⭐<br>
+            <br>
+            <span style="font-size:12px">
+            Rooms with open-air baths: <b style="color:{color_room_bath}">{has_room_bath}</b><br>
+            Rental private baths: <b style="color:{color_rental}">{rental_status}</b>
+            </span>
+            <hr style="margin:8px 0">
+            <div style="display:flex; justify-content:space-between;">
+                <a href="{row['url']}" target="_blank" style="text-decoration:none; color:#0066cc;">ℹ️ Details</a>
+                <a href="{booking_link}" target="_blank" style="text-decoration:none; color:#0066cc; font-weight:bold;">📅 Check Booking</a>
+            </div>
+        </div>
+        """
+
+        folium.Marker(
+            location=[row["lat"], row["lon"]],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{row['name']} ({price_str})",
+            icon=folium.Icon(color=color, icon="hot-tub-person", prefix="fa"),
+        ).add_to(marker_cluster)
+
+    # Render the map
+    # returned_objects=[] prevents the map from reloading the Python script on click
+    st_folium(m, height=600, width="stretch", returned_objects=[])
+
+
 def main():
     st.set_page_config(
         page_title="Ryokan Explorer", layout="wide", page_icon="♨️"
     )
-
     st.title("♨️ Japan Ryokan Explorer")
 
     # 1. Load Data
@@ -91,7 +180,7 @@ def main():
     # --- Sidebar Filters ---
     st.sidebar.header("Filter Options")
 
-    # Currency Selector
+    # Currency
     currency = st.sidebar.selectbox("Currency", ["JPY", "USD", "EUR"])
     current_rate = rates[currency]
     symbol = SYMBOLS[currency]
@@ -101,7 +190,7 @@ def main():
             f"ℹ️ Live Rate: 10,000 JPY ≈ {10000 * current_rate:.2f} {currency}"
         )
 
-    # Dynamic Price Sliders
+    # Price Slider
     min_actual_price_converted = int(
         df["price_range_min"].min() * current_rate
     )
@@ -126,19 +215,11 @@ def main():
         ),
         step=1000 if currency == "JPY" else 10,
     )
-    # UNCERTAINTY DISCLAIMER
-    st.sidebar.caption(
-        "⚠️ *Prices are general estimates per guest based on standard plans. "
-        "Actual prices vary by season and availability.*"
-    )
+    st.sidebar.caption("⚠️ Prices are estimates based on standard plans.")
 
-    # Rating Filter
+    # Rating
     min_rating = st.sidebar.slider(
-        "⭐ Min TripAdvisor Rating",
-        min_value=0.0,
-        max_value=5.0,
-        value=3.5,
-        step=0.1,
+        "⭐ Min TripAdvisor Rating", 0.0, 5.0, 3.5, 0.1
     )
 
     st.sidebar.markdown("---")
@@ -176,93 +257,12 @@ def main():
             filtered_df["rental_both_indoor_outdoor_tubs"] == True
         ]
 
-    # --- Map Generation ---
-    st.markdown(
-        f"**Found {len(filtered_df)} Ryokans matching your criteria.**"
-    )
-
-    m = folium.Map(
-        location=JAPAN_COORDS, zoom_start=5, tiles="CartoDB positron"
-    )
-    Fullscreen().add_to(m)
-    marker_cluster = MarkerCluster().add_to(m)
-
-    for _, row in filtered_df.iterrows():
-        # Calculate displayed min and max
-        disp_min = int(row["price_range_min"] * current_rate)
-        disp_max = int(row["price_range_max"] * current_rate)
-
-        price_jpy = row["price_range_min"]
-        color = "green"
-        if price_jpy > 100000:
-            color = "black"
-        elif price_jpy > 60000:
-            color = "purple"
-        elif price_jpy > 30000:
-            color = "orange"
-
-        # --- Prepare Popup Data ---
-
-        has_room_bath = (
-            "Available"
-            if row["room_with_open_air_bath"] > 0
-            else "Unavailable"
-        )
-        color_room_bath = (
-            "green" if row["room_with_open_air_bath"] > 0 else "gray"
-        )
-
-        has_rental = (
-            row["rental_open_air_tubs"]
-            or row["rental_indoor_tubs"]
-            or row["rental_both_indoor_outdoor_tubs"]
-        )
-        rental_status = "Available" if has_rental else "Unavailable"
-        color_rental = "green" if has_rental else "gray"
-
-        encoded_name = urllib.parse.quote(row["name"] + " Ryokan")
-        booking_link = (
-            f"https://www.booking.com/searchresults.html?ss={encoded_name}"
-        )
-
-        # UPDATED: Price string shows range "Min - Max"
-        price_str = f"{symbol}{disp_min:,} - {symbol}{disp_max:,}"
-
-        popup_html = f"""
-        <div style="font-family:sans-serif; min-width:250px">
-            <h4 style="margin:0">{row['name']}</h4>
-            <p style="margin:0; font-size:12px; color:#555">{row['location']}</p>
-            <hr style="margin:5px 0">
-            <b>Price:</b> {price_str}<br>
-            <b>Rating:</b> {row['tripadvisor_rating']}⭐<br>
-            <br>
-            <span style="font-size:12px">
-            Rooms with open-air baths: <b style="color:{color_room_bath}">{has_room_bath}</b><br>
-            Rental private baths: <b style="color:{color_rental}">{rental_status}</b>
-            </span>
-            <hr style="margin:8px 0">
-            <div style="display:flex; justify-content:space-between;">
-                <a href="{row['url']}" target="_blank" style="text-decoration:none; color:#0066cc;">ℹ️ Details</a>
-                <a href="{booking_link}" target="_blank" style="text-decoration:none; color:#0066cc; font-weight:bold;">📅 Check Booking</a>
-            </div>
-        </div>
-        """
-
-        folium.Marker(
-            location=[row["lat"], row["lon"]],
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{row['name']} ({price_str})",
-            icon=folium.Icon(color=color, icon="hot-tub-person", prefix="fa"),
-        ).add_to(marker_cluster)
-
-    # Display Map
-    st_folium(m, height=600, width="stretch")
+    # --- Call the Fragment (Isolates the map to prevent blinking) ---
+    render_map(filtered_df, symbol, current_rate)
 
     # --- Data Table View ---
     with st.expander("See details in list view"):
         display_df = filtered_df.copy()
-
-        # Calculate display columns for table
         display_df["Min Price"] = (
             display_df["price_range_min"] * current_rate
         ).astype(int)

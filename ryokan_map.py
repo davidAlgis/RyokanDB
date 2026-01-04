@@ -1,4 +1,4 @@
-import urllib.parse  # Added for link encoding
+import urllib.parse
 
 import folium
 import pandas as pd
@@ -109,7 +109,6 @@ def main():
         df["price_range_max"].max() * current_rate
     )
 
-    # Safety check if max price is 0 to avoid slider error
     if max_actual_price_converted == 0:
         max_actual_price_converted = 100000
 
@@ -126,6 +125,11 @@ def main():
             int(max_actual_price_converted * 0.5),
         ),
         step=1000 if currency == "JPY" else 10,
+    )
+    # UNCERTAINTY DISCLAIMER
+    st.sidebar.caption(
+        "⚠️ *Prices are general estimates per guest based on standard plans. "
+        "Actual prices vary by season and availability.*"
     )
 
     # Rating Filter
@@ -184,7 +188,9 @@ def main():
     marker_cluster = MarkerCluster().add_to(m)
 
     for _, row in filtered_df.iterrows():
-        display_price = int(row["price_range_min"] * current_rate)
+        # Calculate displayed min and max
+        disp_min = int(row["price_range_min"] * current_rate)
+        disp_max = int(row["price_range_max"] * current_rate)
 
         price_jpy = row["price_range_min"]
         color = "green"
@@ -197,7 +203,6 @@ def main():
 
         # --- Prepare Popup Data ---
 
-        # 1. Rooms with open-air baths
         has_room_bath = (
             "Available"
             if row["room_with_open_air_bath"] > 0
@@ -207,7 +212,6 @@ def main():
             "green" if row["room_with_open_air_bath"] > 0 else "gray"
         )
 
-        # 2. Rental hot spring baths (Any type)
         has_rental = (
             row["rental_open_air_tubs"]
             or row["rental_indoor_tubs"]
@@ -216,18 +220,20 @@ def main():
         rental_status = "Available" if has_rental else "Unavailable"
         color_rental = "green" if has_rental else "gray"
 
-        # 3. Booking.com Search Link
         encoded_name = urllib.parse.quote(row["name"] + " Ryokan")
         booking_link = (
             f"https://www.booking.com/searchresults.html?ss={encoded_name}"
         )
+
+        # UPDATED: Price string shows range "Min - Max"
+        price_str = f"{symbol}{disp_min:,} - {symbol}{disp_max:,}"
 
         popup_html = f"""
         <div style="font-family:sans-serif; min-width:250px">
             <h4 style="margin:0">{row['name']}</h4>
             <p style="margin:0; font-size:12px; color:#555">{row['location']}</p>
             <hr style="margin:5px 0">
-            <b>Price:</b> {symbol}{display_price:,}<br>
+            <b>Price:</b> {price_str}<br>
             <b>Rating:</b> {row['tripadvisor_rating']}⭐<br>
             <br>
             <span style="font-size:12px">
@@ -245,7 +251,7 @@ def main():
         folium.Marker(
             location=[row["lat"], row["lon"]],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{row['name']} ({symbol}{display_price:,})",
+            tooltip=f"{row['name']} ({price_str})",
             icon=folium.Icon(color=color, icon="hot-tub-person", prefix="fa"),
         ).add_to(marker_cluster)
 
@@ -255,14 +261,20 @@ def main():
     # --- Data Table View ---
     with st.expander("See details in list view"):
         display_df = filtered_df.copy()
-        display_df["display_price"] = (
+
+        # Calculate display columns for table
+        display_df["Min Price"] = (
             display_df["price_range_min"] * current_rate
+        ).astype(int)
+        display_df["Max Price"] = (
+            display_df["price_range_max"] * current_rate
         ).astype(int)
 
         cols = [
             "name",
             "location",
-            "display_price",
+            "Min Price",
+            "Max Price",
             "tripadvisor_rating",
             "url",
         ]
@@ -273,8 +285,11 @@ def main():
             ),
             column_config={
                 "url": st.column_config.LinkColumn("Link"),
-                "display_price": st.column_config.NumberColumn(
-                    f"Price ({symbol})", format=f"{symbol}%d"
+                "Min Price": st.column_config.NumberColumn(
+                    f"Min ({symbol})", format=f"{symbol}%d"
+                ),
+                "Max Price": st.column_config.NumberColumn(
+                    f"Max ({symbol})", format=f"{symbol}%d"
                 ),
             },
             width="stretch",

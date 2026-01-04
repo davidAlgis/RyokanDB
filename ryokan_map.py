@@ -1,3 +1,5 @@
+import urllib.parse  # Added for link encoding
+
 import folium
 import pandas as pd
 import requests
@@ -107,6 +109,10 @@ def main():
         df["price_range_max"].max() * current_rate
     )
 
+    # Safety check if max price is 0 to avoid slider error
+    if max_actual_price_converted == 0:
+        max_actual_price_converted = 100000
+
     slider_max = max_actual_price_converted + (
         5000 * current_rate if currency == "JPY" else 100
     )
@@ -189,24 +195,61 @@ def main():
         elif price_jpy > 30000:
             color = "orange"
 
+        # --- Prepare Popup Data ---
+
+        # 1. Rooms with open-air baths
+        has_room_bath = (
+            "Available"
+            if row["room_with_open_air_bath"] > 0
+            else "Unavailable"
+        )
+        color_room_bath = (
+            "green" if row["room_with_open_air_bath"] > 0 else "gray"
+        )
+
+        # 2. Rental hot spring baths (Any type)
+        has_rental = (
+            row["rental_open_air_tubs"]
+            or row["rental_indoor_tubs"]
+            or row["rental_both_indoor_outdoor_tubs"]
+        )
+        rental_status = "Available" if has_rental else "Unavailable"
+        color_rental = "green" if has_rental else "gray"
+
+        # 3. Booking.com Search Link
+        encoded_name = urllib.parse.quote(row["name"] + " Ryokan")
+        booking_link = (
+            f"https://www.booking.com/searchresults.html?ss={encoded_name}"
+        )
+
         popup_html = f"""
-        <div style="font-family:sans-serif; min-width:180px">
-            <b>{row['name']}</b><br>
-            Price: {symbol}{display_price:,}<br>
-            Rating: {row['tripadvisor_rating']}⭐<br>
-            <a href="{row['url']}" target="_blank">View Details</a>
+        <div style="font-family:sans-serif; min-width:250px">
+            <h4 style="margin:0">{row['name']}</h4>
+            <p style="margin:0; font-size:12px; color:#555">{row['location']}</p>
+            <hr style="margin:5px 0">
+            <b>Price:</b> {symbol}{display_price:,}<br>
+            <b>Rating:</b> {row['tripadvisor_rating']}⭐<br>
+            <br>
+            <span style="font-size:12px">
+            Rooms with open-air baths: <b style="color:{color_room_bath}">{has_room_bath}</b><br>
+            Rental private baths: <b style="color:{color_rental}">{rental_status}</b>
+            </span>
+            <hr style="margin:8px 0">
+            <div style="display:flex; justify-content:space-between;">
+                <a href="{row['url']}" target="_blank" style="text-decoration:none; color:#0066cc;">ℹ️ Details</a>
+                <a href="{booking_link}" target="_blank" style="text-decoration:none; color:#0066cc; font-weight:bold;">📅 Check Booking</a>
+            </div>
         </div>
         """
 
         folium.Marker(
             location=[row["lat"], row["lon"]],
-            popup=folium.Popup(popup_html, max_width=250),
+            popup=folium.Popup(popup_html, max_width=300),
             tooltip=f"{row['name']} ({symbol}{display_price:,})",
             icon=folium.Icon(color=color, icon="hot-tub-person", prefix="fa"),
         ).add_to(marker_cluster)
 
     # Display Map
-    # FIX 1: Updated st_folium arguments
     st_folium(m, height=600, width="stretch")
 
     # --- Data Table View ---
@@ -224,7 +267,6 @@ def main():
             "url",
         ]
 
-        # FIX 2: Updated st.dataframe arguments
         st.dataframe(
             display_df[cols].sort_values(
                 by="tripadvisor_rating", ascending=False

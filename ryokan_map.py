@@ -19,21 +19,17 @@ FALLBACK_RATES = {
 SYMBOLS = {"JPY": "¥", "USD": "$", "EUR": "€"}
 
 
-@st.cache_data(ttl=3600)  # Cache data for 1 hour to avoid spamming the API
+@st.cache_data(ttl=3600)
 def fetch_exchange_rates():
     """
     Fetches real-time exchange rates with JPY as the base.
-    Returns a dictionary like {'JPY': 1.0, 'USD': 0.0067, ...}
     """
     try:
-        # We use the open.er-api.com endpoint which requires no API key.
-        # We ask for rates relative to JPY.
         url = "https://open.er-api.com/v6/latest/JPY"
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
 
-        # specific rates we care about
         rates = {
             "JPY": 1.0,
             "USD": data["rates"]["USD"],
@@ -41,23 +37,15 @@ def fetch_exchange_rates():
         }
         return rates
     except Exception as e:
-        # Silently fail to console and return hardcoded fallback
         print(f"⚠️ API Error (using fallback rates): {e}")
         return FALLBACK_RATES
 
 
 @st.cache_data
 def load_data():
-    """
-    Loads ryokan data from CSV.
-    """
     try:
         df = pd.read_csv(INPUT_FILE, sep=";")
-
-        # Ensure coordinates are present
         df = df.dropna(subset=["lat", "lon"])
-
-        # Clean up price columns
         df["price_range_min"] = (
             pd.to_numeric(df["price_range_min"], errors="coerce")
             .fillna(0)
@@ -68,7 +56,6 @@ def load_data():
             .fillna(0)
             .astype(int)
         )
-
         return df
     except FileNotFoundError:
         return None
@@ -84,7 +71,7 @@ def main():
     # 1. Load Data
     df = load_data()
 
-    # 2. Fetch Rates (Live or Fallback)
+    # 2. Fetch Rates
     rates = fetch_exchange_rates()
 
     if df is None:
@@ -107,14 +94,12 @@ def main():
     current_rate = rates[currency]
     symbol = SYMBOLS[currency]
 
-    # Display current rate for user info
     if currency != "JPY":
         st.sidebar.caption(
             f"ℹ️ Live Rate: 10,000 JPY ≈ {10000 * current_rate:.2f} {currency}"
         )
 
     # Dynamic Price Sliders
-    # Calculate min/max in the SELECTED currency
     min_actual_price_converted = int(
         df["price_range_min"].min() * current_rate
     )
@@ -122,7 +107,6 @@ def main():
         df["price_range_max"].max() * current_rate
     )
 
-    # Add buffer for the slider max
     slider_max = max_actual_price_converted + (
         5000 * current_rate if currency == "JPY" else 100
     )
@@ -161,20 +145,16 @@ def main():
     # --- Filtering Logic ---
     filtered_df = df.copy()
 
-    # Convert user selection back to JPY for filtering the raw dataframe
     min_filter_jpy = price_range[0] / current_rate
     max_filter_jpy = price_range[1] / current_rate
 
-    # Filter Price
     filtered_df = filtered_df[
         (filtered_df["price_range_min"] >= min_filter_jpy)
         & (filtered_df["price_range_min"] <= max_filter_jpy)
     ]
 
-    # Filter Rating
     filtered_df = filtered_df[filtered_df["tripadvisor_rating"] >= min_rating]
 
-    # Filter Amenities
     if show_open_air_room:
         filtered_df = filtered_df[filtered_df["room_with_open_air_bath"] > 0]
     if show_rental_open:
@@ -198,10 +178,8 @@ def main():
     marker_cluster = MarkerCluster().add_to(m)
 
     for _, row in filtered_df.iterrows():
-        # Display price in selected currency
         display_price = int(row["price_range_min"] * current_rate)
 
-        # Color logic (using fixed JPY thresholds for consistency)
         price_jpy = row["price_range_min"]
         color = "green"
         if price_jpy > 100000:
@@ -228,7 +206,8 @@ def main():
         ).add_to(marker_cluster)
 
     # Display Map
-    st_folium(m, width=1200, height=600, use_container_width=True)
+    # FIX 1: Updated st_folium arguments
+    st_folium(m, height=600, width="stretch")
 
     # --- Data Table View ---
     with st.expander("See details in list view"):
@@ -245,6 +224,7 @@ def main():
             "url",
         ]
 
+        # FIX 2: Updated st.dataframe arguments
         st.dataframe(
             display_df[cols].sort_values(
                 by="tripadvisor_rating", ascending=False
@@ -255,7 +235,7 @@ def main():
                     f"Price ({symbol})", format=f"{symbol}%d"
                 ),
             },
-            use_container_width=True,
+            width="stretch",
         )
 
 

@@ -11,6 +11,13 @@ from streamlit_folium import st_folium
 INPUT_FILE = "ryokans_db.csv"
 JAPAN_COORDS = [36.2048, 138.2529]
 
+# CartoDB's hosted basemaps now require an API key, so use a keyless provider.
+TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+TILE_ATTR = (
+    '&copy; <a href="https://www.openstreetmap.org/copyright">'
+    "OpenStreetMap</a> contributors"
+)
+
 # Fallback rates in case API fails
 FALLBACK_RATES = {
     "JPY": 1.0,
@@ -77,7 +84,10 @@ def render_map(filtered_df, symbol, current_rate):
 
     # Create the map object
     m = folium.Map(
-        location=JAPAN_COORDS, zoom_start=5, tiles="CartoDB positron"
+        location=JAPAN_COORDS,
+        zoom_start=5,
+        tiles=TILE_URL,
+        attr=TILE_ATTR,
     )
     Fullscreen().add_to(m)
     marker_cluster = MarkerCluster().add_to(m)
@@ -150,7 +160,7 @@ def render_map(filtered_df, symbol, current_rate):
 
     # Render the map
     # returned_objects=[] prevents the map from reloading the Python script on click
-    st_folium(m, height=600, width="stretch", returned_objects=[])
+    st_folium(m, height=600, use_container_width=True, returned_objects=[])
 
 
 def main():

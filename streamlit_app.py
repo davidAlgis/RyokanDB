@@ -12,11 +12,18 @@ INPUT_FILE = "ryokans_db.csv"
 JAPAN_COORDS = [36.2048, 138.2529]
 
 # CartoDB's hosted basemaps now require an API key, so use a keyless provider.
-TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-TILE_ATTR = (
-    '&copy; <a href="https://www.openstreetmap.org/copyright">'
-    "OpenStreetMap</a> contributors"
+# Esri's Light Gray Canvas splits the basemap in two: a label-free base and a
+# reference layer whose place names are romanized, which keeps the Japanese
+# labels readable for non-kanji readers.
+ESRI_CANVAS = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/"
+    "{layer}/MapServer/tile/{{z}}/{{y}}/{{x}}"
 )
+TILE_URL = ESRI_CANVAS.format(layer="World_Light_Gray_Base")
+LABELS_URL = ESRI_CANVAS.format(layer="World_Light_Gray_Reference")
+TILE_ATTR = "Tiles &copy; Esri"
+# The Light Gray Canvas has no tiles past zoom 16.
+MAX_ZOOM = 16
 
 # Fallback rates in case API fails
 FALLBACK_RATES = {
@@ -88,7 +95,15 @@ def render_map(filtered_df, symbol, current_rate):
         zoom_start=5,
         tiles=TILE_URL,
         attr=TILE_ATTR,
+        max_zoom=MAX_ZOOM,
     )
+    folium.TileLayer(
+        tiles=LABELS_URL,
+        attr=TILE_ATTR,
+        overlay=True,
+        control=False,
+        max_zoom=MAX_ZOOM,
+    ).add_to(m)
     Fullscreen().add_to(m)
     marker_cluster = MarkerCluster().add_to(m)
 
